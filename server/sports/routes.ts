@@ -86,6 +86,21 @@ sportsRouter.delete('/keys/:key', (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
+// HEALTH CHECK
+// -------------------------------------------------------------
+sportsRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'API-SPORTS-LIVE-JMH',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    supportedLeaguesCount: SUPPORTED_LEAGUES.length,
+    channelsCount: SPORTS_CHANNELS.length,
+    activeKeysCount: getAllSportsKeys().length,
+  });
+});
+
+// -------------------------------------------------------------
 // 1. TOURNAMENTS & LEAGUES LIST
 // -------------------------------------------------------------
 sportsRouter.get('/tournaments', async (_req: Request, res: Response) => {

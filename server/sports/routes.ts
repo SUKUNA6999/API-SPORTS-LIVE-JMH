@@ -101,6 +101,58 @@ sportsRouter.get('/health', (_req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
+// STREAM NETWORK PROBE & DIAGNOSTICS
+// -------------------------------------------------------------
+sportsRouter.get('/stream/probe', async (req: Request, res: Response) => {
+  const streamUrl = String(req.query.url || '');
+  if (!streamUrl || !streamUrl.startsWith('http')) {
+    return res.status(400).json({ error: 'URL invalide (doit commencer par http/https)' });
+  }
+
+  const start = Date.now();
+  try {
+    const probeRes = await fetch(streamUrl, {
+      method: 'HEAD',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(4500),
+    });
+
+    const latencyMs = Date.now() - start;
+    const contentType = probeRes.headers.get('content-type') || '';
+    const frameOptions = probeRes.headers.get('x-frame-options');
+    const csp = probeRes.headers.get('content-security-policy') || '';
+
+    const isHls = streamUrl.includes('.m3u8') || contentType.includes('mpegurl');
+    const isFrameRestricted = !!frameOptions || csp.includes('frame-ancestors');
+
+    res.json({
+      ok: probeRes.ok,
+      status: probeRes.status,
+      statusText: probeRes.statusText || (probeRes.ok ? 'OK' : 'Error'),
+      latencyMs,
+      contentType,
+      isHls,
+      isFrameRestricted,
+      frameOptions: frameOptions || null,
+      recommendation: isHls ? 'video-hls' : isFrameRestricted ? 'external-tab' : 'iframe',
+    });
+  } catch (error: any) {
+    res.json({
+      ok: false,
+      status: 0,
+      statusText: error.name === 'TimeoutError' ? 'Délai d’attente dépassé (Timeout)' : (error.message || 'Erreur réseau'),
+      latencyMs: Date.now() - start,
+      contentType: '',
+      isHls: streamUrl.includes('.m3u8'),
+      isFrameRestricted: true,
+      recommendation: 'next-mirror',
+    });
+  }
+});
+
+// -------------------------------------------------------------
 // 1. TOURNAMENTS & LEAGUES LIST
 // -------------------------------------------------------------
 sportsRouter.get('/tournaments', async (_req: Request, res: Response) => {
@@ -266,7 +318,8 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
   }
 
   const selectedStream = streams[currentMirrorIndex] || streams[0];
-  const embedSrc = selectedStream?.embedUrl || 'https://topembed.pw';
+  const embedSrc = selectedStream?.embedUrl || selectedStream?.url || 'https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/aspor/aspor.m3u8';
+  const isHls = embedSrc.includes('.m3u8') || selectedStream?.type === 'hls';
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('X-Frame-Options', 'ALLOWALL');
@@ -277,24 +330,33 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} - JMH Sports Live Player (Sans Pub)</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; background: #08090d; overflow: hidden; display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #fff; }
-    .top-bar { height: 56px; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; z-index: 50; }
-    .match-info { display: flex; align-items: center; gap: 12px; }
+    html, body { width: 100%; height: 100%; background: #05070a; overflow: hidden; display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #fff; }
+    .top-bar { height: 56px; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; z-index: 50; flex-shrink: 0; }
+    .match-info { display: flex; align-items: center; gap: 12px; overflow: hidden; }
     .team-badge { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; }
     .team-logo { width: 24px; height: 24px; object-fit: contain; }
     .score-badge { background: #0284c7; color: #fff; font-weight: 900; font-size: 14px; padding: 3px 10px; border-radius: 6px; letter-spacing: 1px; }
-    .live-pulse { display: flex; align-items: center; gap: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .live-pulse { display: flex; align-items: center; gap: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; flex-shrink: 0; }
     .live-pulse span { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; }
-    .mirrors-group { display: flex; align-items: center; gap: 6px; }
-    .mirror-btn { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 5px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; }
+    .mirrors-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .mirror-btn { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 6px 12px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; }
     .mirror-btn:hover { background: #334155; color: #fff; }
-    .mirror-btn.active { background: #0284c7; color: #fff; border-color: #38bdf8; }
-    .player-wrap { position: relative; flex: 1; width: 100%; height: calc(100% - 56px); background: #000; }
+    .mirror-btn.active { background: #10b981; color: #022c22; font-weight: 900; border-color: #34d399; }
+    .player-wrap { position: relative; flex: 1; width: 100%; height: calc(100% - 150px); background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; }
     iframe { width: 100%; height: 100%; border: none; background: #000; }
-    .fallback-bar { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(8px); padding: 7px 16px; border-radius: 12px; font-size: 11px; border: 1px solid rgba(255,255,255,0.12); display: flex; align-items: center; gap: 12px; z-index: 99; color: #94a3b8; }
-    .fallback-bar a { color: #38bdf8; font-weight: 700; text-decoration: underline; }
+    .log-bar { height: 94px; background: #090d16; border-top: 1px solid rgba(255,255,255,0.1); padding: 8px 16px; font-family: monospace; font-size: 11px; color: #94a3b8; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+    .log-entry { line-height: 1.4; }
+    .log-success { color: #34d399; }
+    .log-error { color: #f87171; }
+    .log-warn { color: #fbbf24; }
+    .log-info { color: #38bdf8; }
+    .floating-tools { position: absolute; bottom: 12px; right: 16px; z-index: 99; display: flex; gap: 8px; }
+    .tool-btn { background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 11px; font-weight: bold; padding: 6px 12px; border-radius: 8px; text-decoration: none; cursor: pointer; }
+    .tool-btn:hover { background: #1e293b; }
   </style>
 </head>
 <body>
@@ -334,17 +396,82 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
   </div>
 
   <div class="player-wrap">
-    <iframe
-      src="${embedSrc}"
-      referrerpolicy="no-referrer"
-      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-      allowfullscreen
-    ></iframe>
-    <div class="fallback-bar">
-      <span>Si l'image ne s'affiche pas, changez de serveur ci-dessus ou :</span>
-      <a href="${embedSrc}" target="_blank" rel="noreferrer">Ouvrir le flux direct</a>
+    ${isHls ? `
+      <video id="sportsVideo" playsinline autoplay muted controls></video>
+    ` : `
+      <iframe
+        id="sportsIframe"
+        src="${embedSrc}"
+        referrerpolicy="no-referrer"
+        allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+        allowfullscreen
+      ></iframe>
+    `}
+
+    <div class="floating-tools">
+      <a href="${embedSrc}" target="_blank" rel="noreferrer" class="tool-btn">Ouvrir Flux Direct ↗</a>
     </div>
   </div>
+
+  <div class="log-bar" id="logTerminal">
+    <div class="log-entry log-info">[INIT] Lecteur Live Pro initialisé pour: ${title}</div>
+    <div class="log-entry log-info">[URL] Source: ${embedSrc}</div>
+    <div class="log-entry log-info">[ENGINE] Mode: ${isHls ? 'Hls.js Video Engine' : 'Iframe Player'}</div>
+  </div>
+
+  <script>
+    function log(type, msg) {
+      var terminal = document.getElementById('logTerminal');
+      if (!terminal) return;
+      var d = new Date().toLocaleTimeString();
+      var div = document.createElement('div');
+      div.className = 'log-entry log-' + type;
+      div.textContent = '[' + d + '] [' + type.toUpperCase() + '] ' + msg;
+      terminal.appendChild(div);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    var isHls = ${JSON.stringify(isHls)};
+    var streamUrl = ${JSON.stringify(embedSrc)};
+
+    if (isHls) {
+      var video = document.getElementById('sportsVideo');
+      if (Hls.isSupported()) {
+        log('info', 'Hls.js supporté. Chargement du flux...');
+        var hls = new Hls({ lowLatencyMode: true });
+        hls.loadSource(streamUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function(e, data) {
+          log('success', 'Manifeste HLS validé avec succès (' + data.levels.length + ' niveaux de résolution) !');
+          video.play().catch(function(err) {
+            log('warn', 'Autoplay bloqué par le navigateur, cliquez sur lecture: ' + err.message);
+          });
+        });
+        hls.on(Hls.Events.ERROR, function(e, data) {
+          if (data.fatal) {
+            log('error', 'Erreur HLS fatale: ' + data.type + ' (' + data.details + ')');
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              log('warn', 'Reconnexion réseau au flux...');
+              hls.startLoad();
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hls.recoverMediaError();
+            }
+          }
+        });
+      } else if (video && video.canPlayType('application/vnd.apple.mpegurl')) {
+        log('info', 'Lecture HLS native supportée...');
+        video.src = streamUrl;
+        video.play();
+      }
+    } else {
+      var iframe = document.getElementById('sportsIframe');
+      if (iframe) {
+        iframe.onload = function() {
+          log('success', 'Iframe chargée avec succès.');
+        };
+      }
+    }
+  </script>
 </body>
 </html>`);
 });

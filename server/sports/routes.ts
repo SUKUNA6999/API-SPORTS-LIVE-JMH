@@ -153,6 +153,77 @@ sportsRouter.get('/stream/probe', async (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
+// STREAM MEDIA PROXY HANDLER (BYPASS CORS & REFERRER RESTRICTIONS)
+// -------------------------------------------------------------
+sportsRouter.get('/stream/proxy', async (req: Request, res: Response) => {
+  const targetUrl = String(req.query.url || '');
+  if (!targetUrl || !targetUrl.startsWith('http')) {
+    return res.status(400).send('URL invalide (doit commencer par http/https)');
+  }
+
+  try {
+    const upstreamUrl = new URL(targetUrl);
+    const origin = upstreamUrl.origin;
+
+    const upstreamRes = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': `${origin}/`,
+        'Origin': origin,
+        'Accept': '*/*',
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+
+    if (!upstreamRes.ok) {
+      return res.status(upstreamRes.status).send(`Erreur serveur amont: ${upstreamRes.statusText}`);
+    }
+
+    const rawContentType = upstreamRes.headers.get('content-type') || '';
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    const isPlaylist = targetUrl.includes('.m3u8') || rawContentType.includes('mpegurl') || rawContentType.includes('application/x-mpegurl');
+
+    if (isPlaylist) {
+      const text = await upstreamRes.text();
+      const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+
+      // Rewrite each segment and sub-playlist to route through this proxy
+      const modifiedLines = text.split('\n').map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) {
+          if (trimmed.includes('URI="')) {
+            return trimmed.replace(/URI="([^"]+)"/g, (_match, uri) => {
+              const fullUri = uri.startsWith('http') ? uri : new URL(uri, baseUrl).toString();
+              return `URI="/api/sports/stream/proxy?url=${encodeURIComponent(fullUri)}"`;
+            });
+          }
+          return line;
+        }
+
+        const fullUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).toString();
+        return `/api/sports/stream/proxy?url=${encodeURIComponent(fullUrl)}`;
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      return res.send(modifiedLines.join('\n'));
+    }
+
+    // Binary media segment (.ts or media chunks)
+    res.setHeader('Content-Type', rawContentType || 'video/mp2t');
+    const arrayBuffer = await upstreamRes.arrayBuffer();
+    return res.send(Buffer.from(arrayBuffer));
+  } catch (err: any) {
+    if (!res.headersSent) {
+      return res.status(502).send(`Échec proxy flux: ${err.message}`);
+    }
+  }
+});
+
+// -------------------------------------------------------------
 // 1. TOURNAMENTS & LEAGUES LIST
 // -------------------------------------------------------------
 sportsRouter.get('/tournaments', async (_req: Request, res: Response) => {
@@ -318,8 +389,11 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
   }
 
   const selectedStream = streams[currentMirrorIndex] || streams[0];
-  const embedSrc = selectedStream?.embedUrl || selectedStream?.url || 'https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/aspor/aspor.m3u8';
-  const isHls = embedSrc.includes('.m3u8') || selectedStream?.type === 'hls';
+  const rawEmbedSrc = selectedStream?.embedUrl || selectedStream?.url || 'https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/aspor/aspor.m3u8';
+  const isHls = rawEmbedSrc.includes('.m3u8') || selectedStream?.type === 'hls';
+  const embedSrc = isHls && rawEmbedSrc.startsWith('http') && !rawEmbedSrc.includes('/api/sports/stream/proxy')
+    ? `/api/sports/stream/proxy?url=${encodeURIComponent(rawEmbedSrc)}`
+    : rawEmbedSrc;
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('X-Frame-Options', 'ALLOWALL');
@@ -328,7 +402,7 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>${title} - JMH Sports Live Player (Sans Pub)</title>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
@@ -341,22 +415,14 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
     .score-badge { background: #0284c7; color: #fff; font-weight: 900; font-size: 14px; padding: 3px 10px; border-radius: 6px; letter-spacing: 1px; }
     .live-pulse { display: flex; align-items: center; gap: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; flex-shrink: 0; }
     .live-pulse span { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; }
-    .mirrors-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-    .mirror-btn { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 6px 12px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; }
+    .mirrors-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+    .mirror-btn { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 6px 12px; border-radius: 8px; font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none; transition: all 0.2s; white-space: nowrap; }
     .mirror-btn:hover { background: #334155; color: #fff; }
     .mirror-btn.active { background: #10b981; color: #022c22; font-weight: 900; border-color: #34d399; }
-    .player-wrap { position: relative; flex: 1; width: 100%; height: calc(100% - 150px); background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .player-wrap { position: relative; flex: 1; width: 100%; height: calc(100% - 56px); background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
     video { width: 100%; height: 100%; object-fit: contain; background: #000; }
     iframe { width: 100%; height: 100%; border: none; background: #000; }
-    .log-bar { height: 94px; background: #090d16; border-top: 1px solid rgba(255,255,255,0.1); padding: 8px 16px; font-family: monospace; font-size: 11px; color: #94a3b8; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
-    .log-entry { line-height: 1.4; }
-    .log-success { color: #34d399; }
-    .log-error { color: #f87171; }
-    .log-warn { color: #fbbf24; }
-    .log-info { color: #38bdf8; }
-    .floating-tools { position: absolute; bottom: 12px; right: 16px; z-index: 99; display: flex; gap: 8px; }
-    .tool-btn { background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 11px; font-weight: bold; padding: 6px 12px; border-radius: 8px; text-decoration: none; cursor: pointer; }
-    .tool-btn:hover { background: #1e293b; }
+    .unmute-btn { position: absolute; top: 16px; left: 16px; background: #f59e0b; color: #000; font-weight: 900; font-size: 12px; padding: 8px 16px; border-radius: 12px; border: none; cursor: pointer; z-index: 99; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 14px rgba(245,158,11,0.4); }
   </style>
 </head>
 <body>
@@ -398,6 +464,9 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
   <div class="player-wrap">
     ${isHls ? `
       <video id="sportsVideo" playsinline autoplay muted controls></video>
+      <button id="unmuteBtn" class="unmute-btn" onclick="toggleSound()">
+        🔊 Activer le Son
+      </button>
     ` : `
       <iframe
         id="sportsIframe"
@@ -407,69 +476,55 @@ sportsRouter.get('/player/clean', async (req: Request, res: Response) => {
         allowfullscreen
       ></iframe>
     `}
-
-    <div class="floating-tools">
-      <a href="${embedSrc}" target="_blank" rel="noreferrer" class="tool-btn">Ouvrir Flux Direct ↗</a>
-    </div>
-  </div>
-
-  <div class="log-bar" id="logTerminal">
-    <div class="log-entry log-info">[INIT] Lecteur Live Pro initialisé pour: ${title}</div>
-    <div class="log-entry log-info">[URL] Source: ${embedSrc}</div>
-    <div class="log-entry log-info">[ENGINE] Mode: ${isHls ? 'Hls.js Video Engine' : 'Iframe Player'}</div>
   </div>
 
   <script>
-    function log(type, msg) {
-      var terminal = document.getElementById('logTerminal');
-      if (!terminal) return;
-      var d = new Date().toLocaleTimeString();
-      var div = document.createElement('div');
-      div.className = 'log-entry log-' + type;
-      div.textContent = '[' + d + '] [' + type.toUpperCase() + '] ' + msg;
-      terminal.appendChild(div);
-      terminal.scrollTop = terminal.scrollHeight;
-    }
-
     var isHls = ${JSON.stringify(isHls)};
     var streamUrl = ${JSON.stringify(embedSrc)};
+    var video = document.getElementById('sportsVideo');
+    var unmuteBtn = document.getElementById('unmuteBtn');
 
-    if (isHls) {
-      var video = document.getElementById('sportsVideo');
+    function toggleSound() {
+      if (video) {
+        video.muted = false;
+        video.volume = 0.85;
+        if (unmuteBtn) unmuteBtn.style.display = 'none';
+      }
+    }
+
+    if (isHls && video) {
       if (Hls.isSupported()) {
-        log('info', 'Hls.js supporté. Chargement du flux...');
-        var hls = new Hls({ lowLatencyMode: true });
+        var hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          liveSyncDurationCount: 3,
+          maxBufferLength: 60,
+          maxMaxBufferLength: 120
+        });
         hls.loadSource(streamUrl);
         hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, function(e, data) {
-          log('success', 'Manifeste HLS validé avec succès (' + data.levels.length + ' niveaux de résolution) !');
-          video.play().catch(function(err) {
-            log('warn', 'Autoplay bloqué par le navigateur, cliquez sur lecture: ' + err.message);
-          });
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+          video.play().catch(function() {});
         });
         hls.on(Hls.Events.ERROR, function(e, data) {
           if (data.fatal) {
-            log('error', 'Erreur HLS fatale: ' + data.type + ' (' + data.details + ')');
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-              log('warn', 'Reconnexion réseau au flux...');
               hls.startLoad();
             } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
               hls.recoverMediaError();
             }
           }
         });
-      } else if (video && video.canPlayType('application/vnd.apple.mpegurl')) {
-        log('info', 'Lecture HLS native supportée...');
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
-        video.play();
+        video.play().catch(function() {});
       }
-    } else {
-      var iframe = document.getElementById('sportsIframe');
-      if (iframe) {
-        iframe.onload = function() {
-          log('success', 'Iframe chargée avec succès.');
-        };
-      }
+
+      video.addEventListener('volumechange', function() {
+        if (!video.muted && video.volume > 0 && unmuteBtn) {
+          unmuteBtn.style.display = 'none';
+        }
+      });
     }
   </script>
 </body>

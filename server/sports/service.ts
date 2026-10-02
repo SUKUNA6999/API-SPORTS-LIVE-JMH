@@ -500,15 +500,130 @@ function buildMatchStreams(matchId: string, matchName: string, leagueName: strin
   ];
 }
 
-// Fetch matches for a specific league
-export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]> {
-  const league = SUPPORTED_LEAGUES.find((l) => l.id === leagueId || l.espnId === leagueId);
-  if (!league) return [];
-
-  const cacheKey = `sports_matches_${league.id}`;
+// Helper: fetch matches from LiveScore API for real global football competitions
+export async function fetchLiveScoreMatches(): Promise<SportsMatch[]> {
+  const cacheKey = 'livescore_daily_matches';
   const cached = getCache<SportsMatch[]>(cacheKey);
   if (cached) return cached;
 
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const dateStr = `${yyyy}${mm}${dd}`;
+
+  try {
+    const res = await fetch(`https://prod-public-api.livescore.com/v1/api/app/date/soccer/${dateStr}/0`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const stages = data.Stages || [];
+    const matches: SportsMatch[] = [];
+
+    for (const stage of stages) {
+      const compName = stage.Cnm ? `${stage.Cnm} - ${stage.Snm}` : stage.Snm;
+      const stageCode = (stage.Scd || stage.Sid || '').toLowerCase();
+      const cnmLower = (stage.Cnm || '').toLowerCase();
+
+      // Map to supported league IDs
+      let leagueId = 'other-soccer';
+      if (cnmLower.includes('uefa nations') || stageCode.includes('nations')) leagueId = 'uefa-nl';
+      else if (cnmLower.includes('champions league') || stageCode.includes('champions')) leagueId = 'ucl';
+      else if (cnmLower.includes('europa') || stageCode.includes('europa')) leagueId = 'europa-league';
+      else if (cnmLower.includes('england') || stageCode.includes('premier')) leagueId = 'epl';
+      else if (cnmLower.includes('spain') || stageCode.includes('laliga')) leagueId = 'laliga';
+      else if (cnmLower.includes('france') || stageCode.includes('ligue-1')) leagueId = 'ligue1';
+      else if (cnmLower.includes('italy') || stageCode.includes('serie-a')) leagueId = 'seriea';
+      else if (cnmLower.includes('germany') || stageCode.includes('bundesliga')) leagueId = 'bundesliga';
+      else if (cnmLower.includes('concacaf')) leagueId = 'concacaf-nl';
+
+      for (const ev of (stage.Events || [])) {
+        const homeRaw = ev.T1?.[0];
+        const awayRaw = ev.T2?.[0];
+        if (!homeRaw || !awayRaw) continue;
+
+        const esdStr = String(ev.Esd || '');
+        const hours = esdStr.length >= 12 ? esdStr.slice(8, 10) : '20';
+        const mins = esdStr.length >= 12 ? esdStr.slice(10, 12) : '00';
+
+        const eps = String(ev.Eps || 'NS');
+        const isLive = eps.includes("'") || eps === 'HT' || eps === 'LIVE';
+        const isFinished = eps === 'FT' || eps === 'AET' || eps === 'AP';
+
+        const homeName = homeRaw.Nm || 'Équipe 1';
+        const awayName = awayRaw.Nm || 'Équipe 2';
+        const matchName = `${homeName} vs ${awayName}`;
+        const matchId = `match-ls-${ev.Eid}`;
+
+        const homeLogo = homeRaw.Img
+          ? `https://lsm-static-prod.livescore.com/high/${homeRaw.Img}`
+          : 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png';
+
+        const awayLogo = awayRaw.Img
+          ? `https://lsm-static-prod.livescore.com/high/${awayRaw.Img}`
+          : 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png';
+
+        const matchStreams = buildMatchStreams(matchId, matchName, compName, 'soccer');
+
+        matches.push({
+          id: matchId,
+          leagueId,
+          leagueName: compName,
+          leagueLogo: 'https://a.espncdn.com/i/leaguelogos/soccer/500/2090.png',
+          sport: 'soccer',
+          name: matchName,
+          shortName: `${homeRaw.Abr || homeName.slice(0, 3)} vs ${awayRaw.Abr || awayName.slice(0, 3)}`,
+          date: new Date().toISOString(),
+          kickOffTime: `${hours}:${mins}`,
+          kickOffDateFormatted: `${dd}/${mm} à ${hours}:${mins}`,
+          timestamp: Date.now(),
+          status: isLive ? 'live' : isFinished ? 'finished' : 'scheduled',
+          statusDetail: isLive ? eps : isFinished ? 'Terminé' : `${hours}:${mins}`,
+          clock: isLive ? eps : undefined,
+          isLive,
+          homeTeam: {
+            id: String(homeRaw.ID || 'home'),
+            name: homeName,
+            shortName: homeRaw.Abr || homeName.slice(0, 3),
+            displayName: homeName,
+            logo: homeLogo,
+            score: parseInt(ev.Tr1 || '0', 10),
+            points: parseInt(ev.Tr1 || '0', 10),
+            homeAway: 'home',
+          },
+          awayTeam: {
+            id: String(awayRaw.ID || 'away'),
+            name: awayName,
+            shortName: awayRaw.Abr || awayName.slice(0, 3),
+            displayName: awayName,
+            logo: awayLogo,
+            score: parseInt(ev.Tr2 || '0', 10),
+            points: parseInt(ev.Tr2 || '0', 10),
+            homeAway: 'away',
+          },
+          broadcasts: ['beIN SPORTS 1', 'Canal+ Foot'],
+          streams: matchStreams,
+        });
+      }
+    }
+
+    setCache(cacheKey, matches, 45 * 1000); // 45s cache for live matches
+    return matches;
+  } catch (err) {
+    console.error('Erreur LiveScore API:', err);
+    return [];
+  }
+}
+
+// Helper: fetch matches from ESPN API (for non-soccer sports or fallback)
+export async function getESPNLeagueMatches(league: TournamentLeague): Promise<SportsMatch[]> {
   try {
     const url = `https://site.api.espn.com/apis/site/v2/sports/${league.sport}/${league.espnId}/scoreboard`;
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(6000) });
@@ -517,7 +632,7 @@ export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]>
     const data = await res.json();
     const events = data.events || [];
 
-    const matches: SportsMatch[] = events.map((ev: any) => {
+    return events.map((ev: any) => {
       const comp = ev.competitions?.[0];
       const homeRaw = comp?.competitors?.find((c: any) => c.homeAway === 'home') || comp?.competitors?.[0];
       const awayRaw = comp?.competitors?.find((c: any) => c.homeAway === 'away') || comp?.competitors?.[1];
@@ -546,7 +661,7 @@ export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]>
         homeAway: 'away',
       };
 
-      const statusType = comp?.status?.type?.state; // 'pre', 'in', 'post'
+      const statusType = comp?.status?.type?.state;
       let status: 'scheduled' | 'live' | 'finished' = 'scheduled';
       let isLive = false;
 
@@ -599,27 +714,46 @@ export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]>
         streams: buildMatchStreams(matchId, `${homeTeam.displayName} vs ${awayTeam.displayName}`, league.name, league.sport),
       };
     });
-
-    setCache(cacheKey, matches, 45 * 1000); // 45s cache for live data
-    return matches;
   } catch (error) {
     console.error(`Error fetching matches for ${league.name}:`, error);
     return [];
   }
 }
 
-// Fetch all matches across all supported tournaments
+// Fetch matches for a specific league (LiveScore first for football, ESPN for others)
+export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]> {
+  const all = await getAllMatches();
+  const filtered = all.filter((m) => m.leagueId === leagueId);
+  if (filtered.length > 0) return filtered;
+
+  const league = SUPPORTED_LEAGUES.find((l) => l.id === leagueId || l.espnId === leagueId);
+  if (league) {
+    return getESPNLeagueMatches(league);
+  }
+  return [];
+}
+
+// Fetch all matches across all supported tournaments (LiveScore Football + Other Sports)
 export async function getAllMatches(): Promise<SportsMatch[]> {
   const cached = getCache<SportsMatch[]>('sports_all_matches');
   if (cached) return cached;
 
-  const results = await Promise.all(
-    SUPPORTED_LEAGUES.map((league) => getLeagueMatches(league.id))
+  // 1. Fetch real European & International football matches from LiveScore API
+  const liveScoreMatches = await fetchLiveScoreMatches();
+
+  // 2. Fetch non-soccer sports (NBA, UFC, NHL, etc.) from ESPN
+  const nonSoccerLeagues = SUPPORTED_LEAGUES.filter((l) => l.sport !== 'soccer');
+  const otherResults = await Promise.all(
+    nonSoccerLeagues.map((league) => getESPNLeagueMatches(league))
   );
 
-  const all = results.flat();
-  // Sort by timestamp
-  all.sort((a, b) => a.timestamp - b.timestamp);
+  const all = [...liveScoreMatches, ...otherResults.flat()];
+  // Live matches first, then upcoming
+  all.sort((a, b) => {
+    if (a.isLive && !b.isLive) return -1;
+    if (!a.isLive && b.isLive) return 1;
+    return a.timestamp - b.timestamp;
+  });
 
   setCache('sports_all_matches', all, 30 * 1000);
   return all;

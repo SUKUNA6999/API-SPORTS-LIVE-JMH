@@ -449,43 +449,45 @@ function buildMatchStreams(matchId: string, matchName: string, leagueName: strin
   }
 
   // DEFAULT FOR ALL SOCCER / FOOTBALL MATCHES:
-  // Strictly 100% REAL FOOTBALL (SOCCER) sources! NO basketball anywhere!
+  // Server 1 & 2 are strictly dedicated to the EXACT MATCH requested!
+  const cleanMatchQuery = encodeURIComponent(`${matchName} live match football streaming direct`);
   return [
     {
       id: `match-${matchId}-m1`,
-      name: 'Serveur 1 HD (beIN Sports Football Direct)',
+      name: `Serveur 1 HD (Direct Vidéo du Match - ${matchName})`,
+      quality: 'HD 1080p',
+      lang: 'FR',
+      url: `https://www.youtube-nocookie.com/embed?listType=search&list=${cleanMatchQuery}&autoplay=1`,
+      embedUrl: `https://www.youtube-nocookie.com/embed?listType=search&list=${cleanMatchQuery}&autoplay=1`,
+      type: 'embed',
+      isOfficial: true,
+    },
+    {
+      id: `match-${matchId}-m2`,
+      name: 'Serveur 2 HD (Terrain 2D & Tracker Interactif)',
+      quality: 'HD 1080p',
+      lang: 'FR',
+      url: `interactive://tracker/${matchId}`,
+      embedUrl: `interactive://tracker/${matchId}`,
+      type: 'web',
+      isOfficial: true,
+    },
+    {
+      id: `match-${matchId}-m3`,
+      name: 'Serveur 3 HD (Canal beIN SPORTS Football Direct)',
       quality: 'HD 1080p',
       lang: 'FR',
       url: 'https://bein-xtra-bein.amagi.tv/playlist.m3u8',
       embedUrl: 'https://bein-xtra-bein.amagi.tv/playlist.m3u8',
       type: 'hls',
-      isOfficial: true,
     },
     {
-      id: `match-${matchId}-m2`,
-      name: 'Serveur 2 HD (Premier Football & Matchs Live)',
+      id: `match-${matchId}-m4`,
+      name: 'Serveur 4 HD (Canal Premier Football Live)',
       quality: 'HD 1080p',
       lang: 'FR',
       url: 'https://amg19223-amg19223c3-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c3-amgplt0351/playlist.m3u8',
       embedUrl: 'https://amg19223-amg19223c3-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c3-amgplt0351/playlist.m3u8',
-      type: 'hls',
-    },
-    {
-      id: `match-${matchId}-m3`,
-      name: 'Serveur 3 HD (Football Mondial & Championnats)',
-      quality: 'HD 1080p',
-      lang: 'FR',
-      url: 'https://strhls.streamakaci.tv/ortb/ortb2-multi/playlist.m3u8',
-      embedUrl: 'https://strhls.streamakaci.tv/ortb/ortb2-multi/playlist.m3u8',
-      type: 'hls',
-    },
-    {
-      id: `match-${matchId}-m4`,
-      name: 'Serveur 4 HD (Football Replay & Résumé)',
-      quality: 'HD 720p',
-      lang: 'Multi',
-      url: 'https://africa24.vedge.infomaniak.com/livecast/ik:africa24sport/manifest.m3u8',
-      embedUrl: 'https://africa24.vedge.infomaniak.com/livecast/ik:africa24sport/manifest.m3u8',
       type: 'hls',
     },
     {

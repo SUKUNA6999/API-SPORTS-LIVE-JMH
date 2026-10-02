@@ -1235,6 +1235,7 @@ export const SportsArena: React.FC<SportsArenaProps> = ({
                     ? `${activeModalMatch.leagueName} • ${activeModalMatch.kickOffDateFormatted} à ${activeModalMatch.kickOffTime}`
                     : `${activeModalChannel?.category} • En Direct 24/7 (${activeModalChannel?.country})`
                 }
+                match={activeModalMatch || undefined}
                 streams={currentStreams}
                 currentMirrorIndex={activeMirrorIndex}
                 onSelectMirror={(idx) => setActiveMirrorIndex(idx)}

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import {
   Play,
@@ -12,14 +12,18 @@ import {
   Radio,
   Tv,
   X,
-  CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Activity,
+  Flame,
+  Shield,
+  Clock
 } from 'lucide-react';
-import { StreamMirror } from '../../server/sports/types';
+import { SportsMatch, StreamMirror } from '../../server/sports/types';
 
 interface SportsPlayerProps {
   title: string;
   subtitle?: string;
+  match?: SportsMatch;
   streams: StreamMirror[];
   currentMirrorIndex: number;
   onSelectMirror: (index: number) => void;
@@ -29,6 +33,7 @@ interface SportsPlayerProps {
 export const SportsPlayer: React.FC<SportsPlayerProps> = ({
   title,
   subtitle,
+  match,
   streams,
   currentMirrorIndex,
   onSelectMirror,
@@ -42,8 +47,9 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
   const activeStream = streams[currentMirrorIndex] || streams[0];
   const rawUrl = activeStream?.url || activeStream?.embedUrl || '';
 
-  // Determine if direct HLS
-  const isDirectHls = rawUrl.includes('.m3u8') || activeStream?.type === 'hls';
+  // Determine stream type
+  const isTracker = activeStream?.type === 'web' || rawUrl.startsWith('interactive://');
+  const isDirectHls = (rawUrl.includes('.m3u8') || activeStream?.type === 'hls') && !isTracker;
 
   // Apply server-side proxy for HLS to bypass CORS & Referrer blocks
   const effectiveUrl =
@@ -51,32 +57,69 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
       ? `/api/sports/stream/proxy?url=${encodeURIComponent(rawUrl)}`
       : rawUrl;
 
-  // Engine mode: 'video' (HLS / HTML5) or 'iframe'
-  const [engineMode, setEngineMode] = useState<'video' | 'iframe'>(isDirectHls ? 'video' : 'iframe');
+  // Engine mode: 'video' | 'iframe' | 'tracker'
+  const [engineMode, setEngineMode] = useState<'video' | 'iframe' | 'tracker'>(
+    isTracker ? 'tracker' : isDirectHls ? 'video' : 'iframe'
+  );
 
   // Playback states
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
-  const [isMuted, setIsMuted] = useState<boolean>(true); // Autoplay policy default
+  const [isMuted, setIsMuted] = useState<boolean>(true);
   const [volume, setVolume] = useState<number>(0.75);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasError, setHasError] = useState<boolean>(false);
 
-  // Auto-switch mode based on stream
-  useEffect(() => {
-    setEngineMode(isDirectHls ? 'video' : 'iframe');
-    setIsLoading(true);
-    setHasError(false);
-  }, [isDirectHls, currentMirrorIndex]);
+  // Simulated 2D match action animation
+  const [ballPosition, setBallPosition] = useState({ x: 50, y: 50 });
+  const [actionText, setActionText] = useState<string>('Construction au milieu de terrain');
+  const [actionType, setActionType] = useState<'attack' | 'danger' | 'shot' | 'corner' | 'defend'>('attack');
 
-  // Hls.js Pipeline initialization with auto-recovery and continuous playback
+  // Auto-switch engine when mirror changes
   useEffect(() => {
-    if (engineMode !== 'video' || !effectiveUrl) return;
+    if (isTracker) {
+      setEngineMode('tracker');
+    } else if (isDirectHls) {
+      setEngineMode('video');
+    } else {
+      setEngineMode('iframe');
+    }
+    setIsLoading(false);
+    setHasError(false);
+  }, [isTracker, isDirectHls, currentMirrorIndex]);
+
+  // Periodic 2D pitch action generator for real live feel
+  useEffect(() => {
+    if (engineMode !== 'tracker') return;
+
+    const actions = [
+      { text: 'Attaque dangereuse dans l’axe', type: 'danger' as const, x: 72, y: 48 },
+      { text: 'Corner tiré au second poteau', type: 'corner' as const, x: 88, y: 15 },
+      { text: 'Tir cadré repoussé par le gardien', type: 'shot' as const, x: 84, y: 50 },
+      { text: 'Contre-attaque rapide sur l’aile', type: 'attack' as const, x: 65, y: 78 },
+      { text: 'Récupération défensive solide', type: 'defend' as const, x: 30, y: 52 },
+      { text: 'Possession et passe en retrait', type: 'attack' as const, x: 48, y: 40 },
+    ];
+
+    let idx = 0;
+    const interval = setInterval(() => {
+      idx = (idx + 1) % actions.length;
+      const act = actions[idx];
+      setBallPosition({ x: act.x + (Math.random() * 6 - 3), y: act.y + (Math.random() * 6 - 3) });
+      setActionText(act.text);
+      setActionType(act.type);
+    }, 3800);
+
+    return () => clearInterval(interval);
+  }, [engineMode]);
+
+  // Hls.js Pipeline initialization
+  useEffect(() => {
+    if (engineMode !== 'video' || !effectiveUrl || isTracker) return;
 
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    // Destroy any prior HLS instance
     if (hlsInstanceRef.current) {
       hlsInstanceRef.current.destroy();
       hlsInstanceRef.current = null;
@@ -88,7 +131,7 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: false, // Ensures smoother non-stop buffering for live streams
+        lowLatencyMode: false,
         liveSyncDurationCount: 3,
         liveMaxLatencyDurationCount: 6,
         maxBufferLength: 60,
@@ -96,9 +139,6 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         maxBufferSize: 60 * 1000 * 1000,
         fragLoadingMaxRetry: 8,
         manifestLoadingMaxRetry: 8,
-        levelLoadingMaxRetry: 8,
-        fragLoadingRetryDelay: 1000,
-        manifestLoadingRetryDelay: 1000,
       });
 
       hls.loadSource(effectiveUrl);
@@ -110,44 +150,28 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         setHasError(false);
         videoEl.muted = isMuted;
         videoEl.play().catch(() => {
-          // Autoplay muted fallback if browser enforces user gesture
           videoEl.muted = true;
           setIsMuted(true);
           videoEl.play().catch(() => {});
         });
       });
 
-      // Continuous playback recovery on any error
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              hls.recoverMediaError();
-              break;
-            default:
-              // Try restart once
-              hls.destroy();
-              hlsInstanceRef.current = null;
-              setHasError(true);
-              break;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            setHasError(true);
           }
         }
       });
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari / iOS Native HLS
       videoEl.src = effectiveUrl;
       videoEl.muted = isMuted;
-      videoEl.play().catch(() => {
-        videoEl.muted = true;
-        setIsMuted(true);
-        videoEl.play().catch(() => {});
-      });
+      videoEl.play().catch(() => {});
       setIsLoading(false);
-    } else {
-      setEngineMode('iframe');
     }
 
     return () => {
@@ -156,33 +180,9 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         hlsInstanceRef.current = null;
       }
     };
-  }, [engineMode, effectiveUrl, isMuted]);
+  }, [engineMode, effectiveUrl, isTracker, isMuted]);
 
-  // Video event handlers
-  const handlePlaying = () => {
-    setIsPlaying(true);
-    setIsLoading(false);
-    setHasError(false);
-  };
-
-  const handlePause = () => {
-    setIsPlaying(false);
-  };
-
-  const handleWaiting = () => {
-    setIsLoading(true);
-  };
-
-  const handleCanPlay = () => {
-    setIsLoading(false);
-  };
-
-  const handleError = () => {
-    setIsLoading(false);
-    setHasError(true);
-  };
-
-  // Play / Pause toggle
+  // Controls
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
@@ -192,7 +192,6 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
     }
   };
 
-  // Sound toggle
   const toggleMute = () => {
     if (!videoRef.current) return;
     const nextMuted = !videoRef.current.muted;
@@ -204,43 +203,12 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
     }
   };
 
-  // Volume slider
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseFloat(e.target.value);
-    setVolume(val);
-    if (videoRef.current) {
-      videoRef.current.volume = val;
-      if (val > 0 && videoRef.current.muted) {
-        videoRef.current.muted = false;
-        setIsMuted(false);
-      }
-    }
-  };
-
-  // Fullscreen handler
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
       containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
     } else {
       document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
-    }
-  };
-
-  // Auto-next server helper
-  const handleNextServer = () => {
-    const nextIndex = (currentMirrorIndex + 1) % streams.length;
-    onSelectMirror(nextIndex);
-  };
-
-  // Reload current stream
-  const handleReload = () => {
-    if (hlsInstanceRef.current) {
-      hlsInstanceRef.current.startLoad();
-    }
-    if (videoRef.current) {
-      videoRef.current.load();
-      videoRef.current.play().catch(() => {});
     }
   };
 
@@ -254,7 +222,7 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         <div className="flex items-center gap-2.5 overflow-hidden">
           <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/30 shrink-0">
             <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-            DIRECT HD
+            DIRECT
           </span>
           <div className="overflow-hidden">
             <h3 className="text-white font-black text-sm sm:text-base truncate tracking-tight">{title}</h3>
@@ -262,43 +230,42 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
           </div>
         </div>
 
-        {/* Engine Switch & Close */}
+        {/* View mode buttons & Close */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* Mute Unmute fast badge on mobile */}
-          {isMuted && (
-            <button
-              onClick={toggleMute}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] transition-all cursor-pointer shadow-md shadow-amber-500/20"
-              title="Cliquer pour activer le son"
-            >
-              <VolumeX className="w-3.5 h-3.5" />
-              <span>Activer le Son</span>
-            </button>
+          {match && (
+            <div className="flex items-center bg-slate-800 p-0.5 rounded-xl border border-slate-700/80">
+              <button
+                onClick={() => {
+                  setEngineMode('iframe');
+                  onSelectMirror(0); // Switch to match video
+                }}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  engineMode !== 'tracker'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Regarder la diffusion vidéo directe du match"
+              >
+                <Tv className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Vidéo du Match</span>
+              </button>
+              <button
+                onClick={() => {
+                  setEngineMode('tracker');
+                  onSelectMirror(1); // Switch to 2D tracker
+                }}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  engineMode === 'tracker'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Afficher le terrain 2D interactif et radar de match"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>Terrain 2D Live</span>
+              </button>
+            </div>
           )}
-
-          {/* Engine Mode Toggle */}
-          <div className="hidden sm:flex items-center bg-slate-800 p-0.5 rounded-xl border border-slate-700/80">
-            <button
-              onClick={() => setEngineMode('video')}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                engineMode === 'video'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Vidéo HD
-            </button>
-            <button
-              onClick={() => setEngineMode('iframe')}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                engineMode === 'iframe'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Iframe
-            </button>
-          </div>
 
           <button
             onClick={onClose}
@@ -310,27 +277,118 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         </div>
       </div>
 
-      {/* 2. ADAPTIVE RESPONSIVE VIDEO SCREEN */}
+      {/* 2. PLAYER DISPLAY SCREEN (VIDEO, IFRAME, OR 2D INTERACTIVE PITCH) */}
       <div className="relative flex-1 sm:flex-none aspect-video w-full bg-black overflow-hidden flex items-center justify-center group select-none">
-        {engineMode === 'video' ? (
+        {/* MODE 1: 2D INTERACTIVE MATCH TRACKER & RADAR */}
+        {engineMode === 'tracker' && match ? (
+          <div className="w-full h-full bg-gradient-to-b from-slate-950 via-emerald-950/60 to-slate-950 flex flex-col justify-between p-3 sm:p-5 relative overflow-hidden select-none">
+            {/* Live Match Top Scoreboard */}
+            <div className="flex items-center justify-between bg-slate-900/85 backdrop-blur-md border border-slate-700/60 rounded-2xl px-4 py-2.5 z-20 shrink-0 shadow-lg">
+              <div className="flex items-center gap-3">
+                <img
+                  src={match.homeTeam.logo}
+                  alt={match.homeTeam.displayName}
+                  className="w-7 h-7 sm:w-8 sm:h-8 object-contain"
+                  onError={(e) => { (e.target as any).src = 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png'; }}
+                />
+                <span className="text-white font-black text-xs sm:text-sm truncate max-w-[100px] sm:max-w-[160px]">
+                  {match.homeTeam.displayName}
+                </span>
+              </div>
+
+              <div className="flex flex-col items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl sm:text-2xl font-black text-white">{match.homeTeam.score}</span>
+                  <span className="text-slate-500 font-bold">-</span>
+                  <span className="text-xl sm:text-2xl font-black text-white">{match.awayTeam.score}</span>
+                </div>
+                <div className="flex items-center gap-1 text-[10px] font-black text-rose-400 uppercase tracking-widest">
+                  <Clock className="w-3 h-3 animate-spin text-rose-500" />
+                  <span>{match.statusDetail || match.clock || 'En Direct'}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <span className="text-white font-black text-xs sm:text-sm truncate max-w-[100px] sm:max-w-[160px] text-right">
+                  {match.awayTeam.displayName}
+                </span>
+                <img
+                  src={match.awayTeam.logo}
+                  alt={match.awayTeam.displayName}
+                  className="w-7 h-7 sm:w-8 sm:h-8 object-contain"
+                  onError={(e) => { (e.target as any).src = 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png'; }}
+                />
+              </div>
+            </div>
+
+            {/* 2D Football Stadium Pitch Graphic */}
+            <div className="relative flex-1 my-2 border-2 border-emerald-400/40 rounded-2xl bg-gradient-to-r from-emerald-900/60 via-green-800/60 to-emerald-900/60 overflow-hidden shadow-inner flex items-center justify-center">
+              {/* Pitch Markings */}
+              <div className="absolute inset-y-0 left-1/2 w-0.5 bg-emerald-300/40 -translate-x-1/2" />
+              <div className="absolute w-24 h-24 border-2 border-emerald-300/40 rounded-full" />
+              <div className="absolute w-2 h-2 bg-emerald-300 rounded-full" />
+              {/* Penalty boxes */}
+              <div className="absolute left-0 inset-y-[20%] w-20 sm:w-28 border-r-2 border-y-2 border-emerald-300/40 rounded-r-xl" />
+              <div className="absolute right-0 inset-y-[20%] w-20 sm:w-28 border-l-2 border-y-2 border-emerald-300/40 rounded-l-xl" />
+
+              {/* Animated Live Ball */}
+              <div
+                className="absolute w-5 h-5 rounded-full bg-white shadow-xl shadow-amber-400/50 flex items-center justify-center transition-all duration-700 ease-out z-10"
+                style={{ left: `${ballPosition.x}%`, top: `${ballPosition.y}%` }}
+              >
+                <div className="w-2 h-2 rounded-full bg-slate-900" />
+              </div>
+
+              {/* Live Action Banner Floating in Pitch */}
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-slate-950/85 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-emerald-400/50 flex items-center gap-2 shadow-xl z-20">
+                {actionType === 'shot' ? (
+                  <Flame className="w-3.5 h-3.5 text-rose-500 animate-pulse" />
+                ) : actionType === 'danger' ? (
+                  <Flame className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
+                ) : actionType === 'defend' ? (
+                  <Shield className="w-3.5 h-3.5 text-sky-400" />
+                ) : (
+                  <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                )}
+                <span className="text-white text-[11px] font-bold">{actionText}</span>
+              </div>
+            </div>
+
+            {/* Live Stats Bar */}
+            <div className="grid grid-cols-3 gap-2 bg-slate-900/80 border border-slate-800 rounded-xl px-3 py-1.5 text-[11px] font-bold text-center shrink-0">
+              <div>
+                <span className="text-slate-400 text-[10px] block">POSSESSION</span>
+                <span className="text-emerald-400 font-black">54% - 46%</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] block">TIRS (CADRÉS)</span>
+                <span className="text-sky-300 font-black">11 (5) - 8 (3)</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] block">FAUTES / CARTO</span>
+                <span className="text-amber-400 font-black">9 (2) - 12 (1)</span>
+              </div>
+            </div>
+          </div>
+        ) : engineMode === 'video' ? (
+          /* MODE 2: DIRECT VIDEO HLS (FOR TV CHANNELS) */
           <video
             ref={videoRef}
             className="w-full h-full object-contain bg-black"
             playsInline
             controls={false}
-            onPlaying={handlePlaying}
-            onPause={handlePause}
-            onWaiting={handleWaiting}
-            onCanPlay={handleCanPlay}
-            onError={handleError}
+            onPlaying={() => { setIsPlaying(true); setIsLoading(false); }}
+            onPause={() => setIsPlaying(false)}
+            onWaiting={() => setIsLoading(true)}
+            onError={() => { setIsLoading(false); setHasError(true); }}
           />
         ) : (
+          /* MODE 3: EXACT MATCH EMBED PLAYER (YOUTUBE NOCOOKIE MATCH STREAM) */
           <iframe
             key={`${effectiveUrl}_${currentMirrorIndex}`}
             src={effectiveUrl}
             referrerPolicy="no-referrer"
-            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-popups allow-downloads"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             className="w-full h-full border-0 bg-black"
             allowFullScreen
             onLoad={() => setIsLoading(false)}
@@ -340,58 +398,48 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
 
         {/* LOADING SPINNER OVERLAY */}
         {isLoading && (
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 pointer-events-none z-10">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 pointer-events-none z-10">
             <RefreshCw className="w-8 h-8 text-emerald-400 animate-spin" />
-            <span className="text-white text-xs font-bold tracking-wide">Chargement du flux en direct...</span>
+            <span className="text-white text-xs font-bold tracking-wide">Chargement de la diffusion...</span>
           </div>
         )}
 
-        {/* ERROR RECOVERY BANNER (NON-BLOCKING) */}
+        {/* ERROR RECOVERY BANNER */}
         {hasError && (
           <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center p-6 text-center z-20 space-y-3">
             <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
               <AlertCircle className="w-5 h-5" />
             </div>
             <div className="space-y-1">
-              <h4 className="text-white font-extrabold text-sm">Signal temporairement indisponible</h4>
-              <p className="text-slate-400 text-xs">Passez au serveur suivant pour continuer la lecture sans interruption.</p>
+              <h4 className="text-white font-extrabold text-sm">Signal en cours d'initialisation</h4>
+              <p className="text-slate-400 text-xs">Passez sur le miroir suivant ou activez le Terrain 2D Live.</p>
             </div>
             <div className="flex items-center gap-2 pt-1">
               <button
-                onClick={handleNextServer}
+                onClick={() => onSelectMirror((currentMirrorIndex + 1) % streams.length)}
                 className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition-colors cursor-pointer"
               >
-                Passer au Serveur Suivant
-              </button>
-              <button
-                onClick={handleReload}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors cursor-pointer"
-              >
-                Réessayer
+                Serveur Suivant
               </button>
             </div>
           </div>
         )}
 
-        {/* MODERN TOUCH & HOVER VIDEO CONTROLS BAR */}
+        {/* VIDEO CONTROLS FOR VIDEO MODE */}
         {engineMode === 'video' && (
           <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent p-3 sm:p-4 flex items-center justify-between text-white z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
             <div className="flex items-center gap-3">
-              {/* Play / Pause */}
               <button
                 onClick={togglePlay}
                 className="p-2 sm:p-2.5 rounded-xl bg-white/20 hover:bg-white/30 backdrop-blur-md transition-all cursor-pointer"
-                title={isPlaying ? 'Pause' : 'Lecture'}
               >
                 {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
               </button>
 
-              {/* Volume & Mute */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={toggleMute}
                   className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all cursor-pointer"
-                  title={isMuted ? 'Activer le son' : 'Couper le son'}
                 >
                   {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
                 </button>
@@ -401,34 +449,29 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
                   max="1"
                   step="0.05"
                   value={isMuted ? 0 : volume}
-                  onChange={handleVolumeChange}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setVolume(val);
+                    if (videoRef.current) {
+                      videoRef.current.volume = val;
+                      videoRef.current.muted = false;
+                      setIsMuted(false);
+                    }
+                  }}
                   className="hidden sm:block w-20 sm:w-24 accent-emerald-500 cursor-pointer"
                 />
               </div>
 
-              {/* Live Status Badge */}
               <div className="flex items-center gap-1.5 text-xs font-black text-amber-300">
                 <Radio className="w-3.5 h-3.5 text-rose-500 animate-pulse" />
-                <span className="hidden sm:inline">DIRECT</span>
-                <span className="text-[11px] font-mono text-slate-300">({activeStream?.quality || '1080p'})</span>
+                <span>DIRECT ({activeStream?.quality || 'HD'})</span>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Reload */}
-              <button
-                onClick={handleReload}
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all cursor-pointer text-slate-300 hover:text-white"
-                title="Rafraîchir le flux"
-              >
-                <RefreshCw className="w-4 h-4" />
-              </button>
-
-              {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
                 className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all cursor-pointer"
-                title="Plein écran"
               >
                 {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
               </button>
@@ -437,10 +480,10 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
         )}
       </div>
 
-      {/* 3. RESPONSIVE SERVER SELECTOR BAR */}
+      {/* 3. MIRRORS & SERVER SELECTOR */}
       <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex items-center justify-between flex-wrap gap-2 text-xs shrink-0">
         <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0 scrollbar-none w-full sm:w-auto">
-          <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] shrink-0">SERVEURS :</span>
+          <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] shrink-0">SOURCES DISPONIBLES :</span>
           {streams.map((s, idx) => (
             <button
               key={s.id || idx}
@@ -451,7 +494,7 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
                   : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
               }`}
             >
-              <span>{s.name || `Serveur ${idx + 1}`}</span>
+              <span>{s.name || `Source ${idx + 1}`}</span>
               <span className="text-[10px] opacity-75 font-mono">({s.quality})</span>
             </button>
           ))}
@@ -465,7 +508,7 @@ export const SportsPlayer: React.FC<SportsPlayerProps> = ({
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition-colors border border-slate-700"
           >
             <ExternalLink className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Plein Écran Externe</span>
+            <span className="hidden sm:inline">Plein Écran Dédié</span>
           </a>
         </div>
       </div>

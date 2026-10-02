@@ -722,6 +722,154 @@ export async function getESPNLeagueMatches(league: TournamentLeague): Promise<Sp
   }
 }
 
+// Helper: fetch matches from Streamed.pk API (Open-source GitHub sports stream aggregator)
+export async function fetchStreamedMatches(): Promise<SportsMatch[]> {
+  const cacheKey = 'streamed_pk_matches';
+  const cached = getCache<SportsMatch[]>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch('https://streamed.pk/api/matches/all/popular', {
+      headers: {
+        'User-Agent': 'StreamedTUI/1.0 (+https://github.com/Salastil/streamed-tui)',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+
+    const matches: SportsMatch[] = [];
+
+    for (const item of data) {
+      if (!item.title || !item.id) continue;
+
+      const category = item.category || 'football';
+      let sport: SportCategory = 'soccer';
+      if (category === 'basketball') sport = 'basketball';
+      else if (category === 'fight') sport = 'mma';
+      else if (category === 'tennis') sport = 'tennis';
+      else if (category === 'hockey') sport = 'hockey';
+      else if (category === 'motor-sports') sport = 'racing';
+
+      const homeName = item.teams?.home?.name || item.title.split(' vs ')[0] || item.title.split(' vs. ')[0] || item.title;
+      const awayName = item.teams?.away?.name || item.title.split(' vs ')[1] || item.title.split(' vs. ')[1] || '';
+      const matchName = awayName ? `${homeName} vs ${awayName}` : item.title;
+
+      const homeBadge = item.teams?.home?.badge
+        ? (item.teams.home.badge.startsWith('http') ? item.teams.home.badge : `https://streamed.pk${item.teams.home.badge}`)
+        : 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png';
+
+      const awayBadge = item.teams?.away?.badge
+        ? (item.teams.away.badge.startsWith('http') ? item.teams.away.badge : `https://streamed.pk${item.teams.away.badge}`)
+        : 'https://a.espncdn.com/i/teamlogos/default-team-logo-500.png';
+
+      const matchDate = new Date(item.date || Date.now());
+      const hours = matchDate.getHours().toString().padStart(2, '0');
+      const mins = matchDate.getMinutes().toString().padStart(2, '0');
+      const day = matchDate.getDate().toString().padStart(2, '0');
+      const month = (matchDate.getMonth() + 1).toString().padStart(2, '0');
+
+      // Now build real stream mirrors from the match's live sources!
+      const sources = Array.isArray(item.sources) ? item.sources : [];
+      const streams: StreamMirror[] = [];
+
+      sources.forEach((src: any, idx: number) => {
+        const embedUrl = `https://embed.st/embed/${src.source}/${src.id}/1`;
+        streams.push({
+          id: `streamed-${item.id}-${src.source}-${idx + 1}`,
+          name: `Serveur ${idx + 1} (${src.source.toUpperCase()} HD Direct)`,
+          quality: 'HD 1080p',
+          lang: 'Multi',
+          url: embedUrl,
+          embedUrl: embedUrl,
+          type: 'embed',
+          isOfficial: true,
+        });
+      });
+
+      // Add Terrain 2D Tracker as secondary mirror
+      streams.push({
+        id: `tracker-${item.id}`,
+        name: 'Serveur 2D (Terrain & Tracker Interactif)',
+        quality: 'HD 1080p',
+        lang: 'FR',
+        url: `interactive://tracker/${item.id}`,
+        embedUrl: `interactive://tracker/${item.id}`,
+        type: 'web',
+        isOfficial: true,
+      });
+
+      // Add beIN SPORTS TV backup for soccer
+      if (sport === 'soccer') {
+        streams.push({
+          id: `tv-backup-${item.id}`,
+          name: 'Serveur TV (beIN SPORTS Football Live)',
+          quality: 'HD 1080p',
+          lang: 'FR',
+          url: 'https://bein-xtra-bein.amagi.tv/playlist.m3u8',
+          embedUrl: 'https://bein-xtra-bein.amagi.tv/playlist.m3u8',
+          type: 'hls',
+        });
+      }
+
+      // Determine live status: if within +/- 2 hours of match date
+      const now = Date.now();
+      const diffMs = now - (item.date || now);
+      const isLive = diffMs >= -15 * 60 * 1000 && diffMs <= 150 * 60 * 1000;
+      const isFinished = diffMs > 150 * 60 * 1000;
+
+      matches.push({
+        id: `match-str-${item.id}`,
+        leagueId: category === 'football' ? 'uefa-nl' : category,
+        leagueName: category.toUpperCase() + ' LIVE',
+        leagueLogo: 'https://a.espncdn.com/i/leaguelogos/soccer/500/2090.png',
+        sport,
+        name: matchName,
+        shortName: `${homeName.slice(0, 4)} vs ${awayName.slice(0, 4)}`,
+        date: matchDate.toISOString(),
+        kickOffTime: `${hours}:${mins}`,
+        kickOffDateFormatted: `${day}/${month} à ${hours}:${mins}`,
+        timestamp: matchDate.getTime(),
+        status: isLive ? 'live' : isFinished ? 'finished' : 'scheduled',
+        statusDetail: isLive ? 'EN DIRECT' : isFinished ? 'Terminé' : `${hours}:${mins}`,
+        isLive,
+        homeTeam: {
+          id: `team-home-${item.id}`,
+          name: homeName,
+          shortName: homeName.slice(0, 4).toUpperCase(),
+          displayName: homeName,
+          logo: homeBadge,
+          score: 0,
+          points: 0,
+          homeAway: 'home',
+        },
+        awayTeam: {
+          id: `team-away-${item.id}`,
+          name: awayName,
+          shortName: awayName.slice(0, 4).toUpperCase(),
+          displayName: awayName,
+          logo: awayBadge,
+          score: 0,
+          points: 0,
+          homeAway: 'away',
+        },
+        broadcasts: ['Direct Match Stream HD', 'Canal+ Foot'],
+        streams,
+      });
+    }
+
+    setCache(cacheKey, matches, 60 * 1000);
+    return matches;
+  } catch (err) {
+    console.error('Erreur Streamed.pk API:', err);
+    return [];
+  }
+}
+
 // Fetch matches for a specific league (LiveScore first for football, ESPN for others)
 export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]> {
   const all = await getAllMatches();
@@ -735,22 +883,51 @@ export async function getLeagueMatches(leagueId: string): Promise<SportsMatch[]>
   return [];
 }
 
-// Fetch all matches across all supported tournaments (LiveScore Football + Other Sports)
+// Fetch all matches across all supported tournaments (Streamed.pk real streams + LiveScore Live scores)
 export async function getAllMatches(): Promise<SportsMatch[]> {
   const cached = getCache<SportsMatch[]>('sports_all_matches');
   if (cached) return cached;
 
-  // 1. Fetch real European & International football matches from LiveScore API
+  // 1. Fetch real match streams from Streamed.pk API (open-source aggregator with real match video links)
+  const streamedMatches = await fetchStreamedMatches();
+
+  // 2. Fetch live scores & minutes from LiveScore API
   const liveScoreMatches = await fetchLiveScoreMatches();
 
-  // 2. Fetch non-soccer sports (NBA, UFC, NHL, etc.) from ESPN
-  const nonSoccerLeagues = SUPPORTED_LEAGUES.filter((l) => l.sport !== 'soccer');
-  const otherResults = await Promise.all(
-    nonSoccerLeagues.map((league) => getESPNLeagueMatches(league))
-  );
+  // 3. For any match in LiveScore that also exists in Streamed.pk, attach the real match stream embeds!
+  for (const lsMatch of liveScoreMatches) {
+    const matchFound = streamedMatches.find((sm) => {
+      const smLower = sm.name.toLowerCase();
+      const hLower = lsMatch.homeTeam.displayName.toLowerCase();
+      const aLower = lsMatch.awayTeam.displayName.toLowerCase();
+      return smLower.includes(hLower) || smLower.includes(aLower);
+    });
+    if (matchFound && matchFound.streams.length > 0) {
+      lsMatch.streams = matchFound.streams;
+    }
+  }
 
-  const all = [...liveScoreMatches, ...otherResults.flat()];
-  // Live matches first, then upcoming
+  // Combine: Streamed.pk matches (with real streams) + LiveScore matches
+  const combinedMap = new Map<string, SportsMatch>();
+  for (const m of streamedMatches) {
+    combinedMap.set(m.name.toLowerCase().trim(), m);
+  }
+  for (const m of liveScoreMatches) {
+    const key = m.name.toLowerCase().trim();
+    if (combinedMap.has(key)) {
+      const existing = combinedMap.get(key)!;
+      existing.homeTeam.score = m.homeTeam.score;
+      existing.awayTeam.score = m.awayTeam.score;
+      existing.statusDetail = m.statusDetail;
+      existing.isLive = m.isLive;
+      existing.status = m.status;
+    } else {
+      combinedMap.set(key, m);
+    }
+  }
+
+  const all = Array.from(combinedMap.values());
+  // Live matches first, then sorted by timestamp
   all.sort((a, b) => {
     if (a.isLive && !b.isLive) return -1;
     if (!a.isLive && b.isLive) return 1;
